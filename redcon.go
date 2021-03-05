@@ -1071,6 +1071,47 @@ func (ps *PubSub) Publish(channel, message string) int {
 	return sent
 }
 
+// Publish a message to subscribers
+func (ps *PubSub) PublishConn(channel, message string, conn Conn) int {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	if !ps.initd {
+		return 0
+	}
+	var sent int
+	// write messages to all clients that are subscribed on the channel
+	pivot := &pubSubEntry{pattern: false, channel: channel}
+	ps.chans.Ascend(pivot, func(item interface{}) bool {
+		entry := item.(*pubSubEntry)
+		if entry.channel != pivot.channel || entry.pattern != pivot.pattern {
+			return false
+		}
+		if entry.sconn.conn != conn {
+			return false
+		}
+		entry.sconn.writeMessage(entry.pattern, "", channel, message)
+		sent++
+		return true
+	})
+
+	// match on and write all psubscribe clients
+	pivot = &pubSubEntry{pattern: true}
+	ps.chans.Ascend(pivot, func(item interface{}) bool {
+		entry := item.(*pubSubEntry)
+		if match.Match(channel, entry.channel) {
+			if entry.sconn.conn != conn {
+				return false
+			}
+			entry.sconn.writeMessage(entry.pattern, entry.channel, channel,
+				message)
+		}
+		sent++
+		return true
+	})
+
+	return sent
+}
+
 type pubSubConn struct {
 	id      uint64
 	mu      sync.Mutex
